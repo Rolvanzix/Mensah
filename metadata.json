@@ -1,0 +1,6 @@
+{
+  "name": "Strike Copy Intelligence",
+  "description": "Smarter copy-trading discovery, trader analytics, and simulation engine for Strike Finance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
