@@ -1,15 +1,20 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Trader, SimulationResult, RecommendationAnalysis } from '../types/strike';
+import { MarketSummary } from '../types/market';
 import {
   CopilotMessage,
   CopilotResponseOutput,
-  generateCopilotResponse,
 } from '../utils/strikeCopilot';
+import { queryMensehIntelligence } from '../services/mensehIntelligenceApi';
+import { generateGroundedIntelligence } from '../utils/mensehIntelligence';
 import {
   formatPercent,
   formatUSD,
   getDrawdown30d,
   getTrader24hVolatility,
+  getTraderWinRate,
+  getTraderProfitFactor,
+  getTraderRiskClassification,
   truncateAddress,
 } from '../services/strikeApi';
 import { ScoreRadialGauge } from './ui/ScoreRadialGauge';
@@ -24,6 +29,7 @@ import {
   CornerDownLeft,
   ExternalLink,
   Flame,
+  LayoutDashboard,
   Maximize2,
   Minimize2,
   RefreshCw,
@@ -31,6 +37,8 @@ import {
   Shield,
   ShieldAlert,
   Sparkles,
+  TrendingDown,
+  TrendingUp,
   User,
   X,
   Zap,
@@ -42,12 +50,14 @@ export interface StrikeCopilotProps {
   onOpen: () => void;
   activeTrader?: Trader | null;
   allTraders?: Trader[];
+  markets?: MarketSummary[];
   userCapital: number;
-  currentView: 'discovery' | 'simulator' | 'watchlist' | 'copilot';
+  currentView: 'dashboard' | 'discovery' | 'simulator' | 'watchlist' | 'copilot';
   recommendationAnalysis?: RecommendationAnalysis | null;
   simulationResult?: SimulationResult | null;
   onNavigateToSimulator?: (trader?: Trader) => void;
   onNavigateToDiscovery?: () => void;
+  onNavigateToDashboard?: () => void;
   onSelectTrader?: (trader: Trader) => void;
   onExpandToDedicatedPage?: () => void;
   initialPrompt?: string;
@@ -161,9 +171,9 @@ export const CopilotMessageBubble: React.FC<{
         <div className="bg-[#121722] text-slate-200 border border-[#1c2438] rounded-2xl rounded-tl-xs p-4 text-xs font-sans shadow-sm">
           {/* Header Label */}
           <div className="flex items-center gap-2 mb-2.5 pb-2 border-b border-[#1c2438]/80">
-            <span className="font-bold text-white text-xs tracking-tight">Strike Copilot</span>
+            <span className="font-bold text-white text-xs tracking-tight">Mensah Intelligence</span>
             <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-[#00f29d]/15 text-[#00f29d] border border-[#00f29d]/30">
-              Risk Engine
+              Risk & Market Engine
             </span>
             <span className="text-[10px] text-slate-500 tabular-nums ml-auto">
               {new Date(message.timestamp).toLocaleTimeString([], {
@@ -259,32 +269,60 @@ export const StrikeCopilot: React.FC<StrikeCopilotProps> = ({
   onOpen,
   activeTrader,
   allTraders = [],
+  markets = [],
   userCapital,
   currentView,
   recommendationAnalysis,
   simulationResult,
   onNavigateToSimulator,
   onNavigateToDiscovery,
+  onNavigateToDashboard,
   onSelectTrader,
   onExpandToDedicatedPage,
   initialPrompt,
   onClearInitialPrompt,
 }) => {
+  const defaultChips = useMemo(() => {
+    return [
+      'What do Long and Short mean?',
+      'How do candlestick charts work?',
+      'How does leverage affect gains and losses?',
+      'What do stop-loss and take-profit do?',
+      'Explain my practice trades',
+      'What is happening in the BTC market?',
+      ...(activeTrader
+        ? [`Which risks should I consider before following ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}?`]
+        : []),
+    ];
+  }, [activeTrader]);
+
   const [messages, setMessages] = useState<CopilotMessage[]>([
     {
       id: 'welcome',
       sender: 'copilot',
-      text: `Hello, I'm **Strike Copilot**. I provide calm, risk-adjusted intelligence to help you evaluate lead traders, understand real downside risks, and size your positions prudently before risking any capital.
+      text: `Hello, I'm **Ask MENSAH** — your plain-English guide to trading charts, practice trading, and market analysis.
 
-You can ask me to evaluate any trader, calculate conservative allocation for your capital ($${userCapital.toLocaleString()}), or explain platform mechanics like 24h Drawdown Spikes and Fixed Ratio vs Fixed Amount.`,
+I am connected to verified Strike Finance live prices and your practice-trading records. I can explain:
+• What candlestick charts and prices are showing
+• What Long and Short mean in practice
+• How leverage multiplies both gains and losses
+• How stop-loss and take-profit protect your virtual balance
+• How your practice profit or loss is calculated
+• What happened in your past practice trades
+
+${
+  activeTrader
+    ? `Currently focused on **${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}** (Score: ${activeTrader.copy_score}/100, Largest Loss from Peak: -${getDrawdown30d(activeTrader)}%, Win Rate: ${getTraderWinRate(activeTrader)}%).`
+    : 'Select any question below or ask anything to get started.'
+}`,
       timestamp: Date.now(),
       suggestedChips: [
-        activeTrader
-          ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-          : 'Compare top traders',
-        'Explain risks',
-        `How to size a $${userCapital.toLocaleString()} account?`,
-        'Fixed Ratio vs Fixed Amount',
+        'What do Long and Short mean?',
+        'How do candlestick charts work?',
+        'How does leverage affect gains and losses?',
+        'What do stop-loss and take-profit do?',
+        'Explain my practice trades',
+        'What is happening in the BTC market?',
       ],
     },
   ]);
@@ -315,7 +353,7 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
     }
   }, [initialPrompt]);
 
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = (textToSend || inputValue).trim();
     if (!text) return;
 
@@ -330,10 +368,11 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
     if (!textToSend) setInputValue('');
     setIsTyping(true);
 
-    setTimeout(() => {
-      const response: CopilotResponseOutput = generateCopilotResponse(text, {
+    try {
+      const response = await queryMensehIntelligence(text, {
         activeTrader,
         allTraders,
+        markets,
         userCapital,
         currentView,
         recommendationAnalysis,
@@ -341,18 +380,41 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
       });
 
       const copilotMsg: CopilotMessage = {
-        id: `copilot-${Date.now()}`,
+        id: `menseh-${Date.now()}`,
         sender: 'copilot',
         text: response.text,
         timestamp: Date.now(),
         warningBanner: response.warningBanner,
-        suggestedChips: response.suggestedChips,
+        suggestedChips: response.suggestedChips || defaultChips,
         actionCard: response.actionCard,
       };
 
       setMessages((prev) => [...prev, copilotMsg]);
+    } catch {
+      const fallback = generateGroundedIntelligence(text, {
+        activeTrader,
+        allTraders,
+        markets,
+        userCapital,
+        currentView,
+        recommendationAnalysis,
+        simulationResult,
+      });
+
+      const copilotMsg: CopilotMessage = {
+        id: `menseh-${Date.now()}`,
+        sender: 'copilot',
+        text: fallback.text,
+        timestamp: Date.now(),
+        warningBanner: fallback.warningBanner,
+        suggestedChips: fallback.suggestedChips || defaultChips,
+        actionCard: fallback.actionCard,
+      };
+
+      setMessages((prev) => [...prev, copilotMsg]);
+    } finally {
       setIsTyping(false);
-    }, 450);
+    }
   };
 
   const handleResetChat = () => {
@@ -360,32 +422,23 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
       {
         id: `welcome-${Date.now()}`,
         sender: 'copilot',
-        text: `Chat reset. I am ready to evaluate traders, size positions for your capital ($${userCapital.toLocaleString()}), or explain any Strike risk concept. How can I assist you?`,
+        text: `Ask MENSAH conversation reset. I am connected to live market prices and your practice-trading records. How can I help you today?`,
         timestamp: Date.now(),
-        suggestedChips: [
-          activeTrader
-            ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-            : 'Compare top traders',
-          'Explain risks',
-          `How to size a $${userCapital.toLocaleString()} account?`,
-          'Fixed Ratio vs Fixed Amount',
-        ],
+        suggestedChips: defaultChips,
       },
     ]);
   };
 
   const quickPrompts = useMemo(() => {
     return [
-      activeTrader
-        ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-        : 'Compare top traders',
-      `How to size a $${userCapital.toLocaleString()} account?`,
-      'Explain 24h Volatility Alerts',
-      'Fixed Ratio vs Fixed Amount',
-      'What leverage is safest for copy trading?',
-      'Explain risks',
+      'What do Long and Short mean?',
+      'How do candlestick charts work?',
+      'How does leverage affect gains and losses?',
+      'What do stop-loss and take-profit do?',
+      'Explain my practice trades',
+      'What is happening in the BTC market?',
     ];
-  }, [activeTrader, userCapital]);
+  }, []);
 
   const activeTraderVol = activeTrader ? getTrader24hVolatility(activeTrader) : null;
 
@@ -395,7 +448,7 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
       {!isOpen && (
         <button
           onClick={onOpen}
-          aria-label="Open Strike Copilot"
+          aria-label="Open Ask MENSAH"
           className="fixed bottom-6 right-6 z-40 bg-[#121722] hover:bg-[#19202f] text-white border border-[#00f29d]/50 hover:border-[#00f29d] rounded-2xl px-4 py-3 shadow-2xl shadow-[#00f29d]/20 transition-all flex items-center gap-3 group hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
         >
           <div className="relative">
@@ -406,15 +459,15 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
           </div>
           <div className="text-left">
             <div className="text-xs font-bold text-white group-hover:text-[#00f29d] transition-colors flex items-center gap-1.5">
-              <span>Strike Copilot</span>
+              <span>Ask MENSAH</span>
               <span className="text-[10px] text-[#00f29d] font-semibold bg-[#00f29d]/15 px-1.5 py-0.2 rounded">
-                AI
+                Assistant
               </span>
             </div>
             <div className="text-[11px] text-slate-400">
               {activeTrader
                 ? `Context: ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-                : 'Risk & Sizing Guide'}
+                : 'Charts, Practice Trades & Strategy'}
             </div>
           </div>
         </button>
@@ -439,16 +492,16 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-sm text-white truncate">Strike Copilot</h3>
+                  <h3 className="font-bold text-sm text-white truncate">Ask MENSAH</h3>
                   <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-[#00f29d]/15 text-[#00f29d] border border-[#00f29d]/30">
-                    Downside-First
+                    Assistant
                   </span>
                 </div>
                 <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-[#00f29d] inline-block" />
-                  <span>Capital: ${userCapital.toLocaleString()}</span>
+                  <span>Virtual Balance: ${userCapital.toLocaleString()}</span>
                   <span>·</span>
-                  <span>Institutional Risk Models</span>
+                  <span>Live Market Grounded</span>
                 </div>
               </div>
             </div>
@@ -527,7 +580,7 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
                   className="text-xs text-[#00f29d] hover:underline flex items-center gap-1 cursor-pointer font-medium"
                 >
                   <Calculator className="w-3.5 h-3.5" />
-                  <span>Simulate</span>
+                  <span>Practise Strategy</span>
                 </button>
               )}
             </div>
@@ -579,7 +632,19 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
                 message={msg}
                 onSendChip={handleSend}
                 onActionClick={(actionCard) => {
-                  if (onNavigateToSimulator) {
+                  if (actionCard?.type === 'market_link' || actionCard?.title?.toLowerCase().includes('market')) {
+                    if (onNavigateToDashboard) {
+                      onNavigateToDashboard();
+                      onClose();
+                    }
+                  } else if (actionCard?.type === 'trader_link' || actionCard?.title?.toLowerCase().includes('trader')) {
+                    if (activeTrader && onSelectTrader) {
+                      onSelectTrader(activeTrader);
+                    } else if (onNavigateToDiscovery) {
+                      onNavigateToDiscovery();
+                      onClose();
+                    }
+                  } else if (onNavigateToSimulator) {
                     onNavigateToSimulator(activeTrader || undefined);
                     onClose();
                   }
@@ -660,47 +725,62 @@ You can ask me to evaluate any trader, calculate conservative allocation for you
 };
 
 /**
- * Dedicated Full-Page Workspace for Strike Copilot
+ * Dedicated Full-Page Workspace for Mensah Intelligence
  * (Renders when activeTab === 'copilot')
  */
 export const StrikeCopilotWorkspace: React.FC<{
   activeTrader?: Trader | null;
   allTraders: Trader[];
+  markets?: MarketSummary[];
   userCapital: number;
   setUserCapital: (capital: number) => void;
   onNavigateToSimulator: (trader?: Trader) => void;
   onNavigateToDiscovery: () => void;
+  onNavigateToDashboard?: () => void;
   onSelectTrader: (trader: Trader) => void;
 }> = ({
   activeTrader,
   allTraders,
+  markets = [],
   userCapital,
   setUserCapital,
   onNavigateToSimulator,
   onNavigateToDiscovery,
+  onNavigateToDashboard,
   onSelectTrader,
 }) => {
+  const defaultChips = useMemo(() => {
+    return [
+      'What is happening in the BTC market?',
+      activeTrader
+        ? `Which risks should I consider before following ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}?`
+        : 'Which risks should I consider before following this trader?',
+      "How consistent has this trader's historical performance been?",
+      'Explain the risks associated with this hypothetical position.',
+      "What contributed to this simulation's profit or loss?",
+    ];
+  }, [activeTrader]);
+
   const [messages, setMessages] = useState<CopilotMessage[]>([
     {
       id: 'welcome-workspace',
       sender: 'copilot',
-      text: `Welcome to the **Strike Copilot Intelligence Desk**.
+      text: `Welcome to the **Mensah Intelligence Desk**.
 
-My purpose is to help you thoroughly evaluate copy-trading strategies, review verified drawdown records, calibrate safe position sizes, and understand key mechanics before risking real capital.
+My purpose is to help you thoroughly evaluate Strike perpetual market dynamics, analyze verified lead traders, evaluate risk factors (win rates, drawdowns, profit factors), and investigate copy-trading simulation risks before committing capital.
 
 ${
   activeTrader
-    ? `Currently focused on **${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}** (Strike Score: ${activeTrader.copy_score}/100, 30d Drawdown: -${getDrawdown30d(activeTrader).toFixed(1)}%).`
-    : `No specific trader locked. You can select any trader from the right panel or ask general allocation questions.`
+    ? `Currently focused on **${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}** (Strike Score: ${activeTrader.copy_score}/100, 30d Drawdown: -${getDrawdown30d(activeTrader).toFixed(1)}%, Win Rate: ${getTraderWinRate(activeTrader)}%).`
+    : `Select a perpetual market or lead trader below to begin data-grounded analysis.`
 }`,
       timestamp: Date.now(),
       suggestedChips: [
-        activeTrader
-          ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-          : 'Compare top traders',
-        'Explain risks',
-        `How to size a $${userCapital.toLocaleString()} account?`,
-        'Fixed Ratio vs Fixed Amount',
+        'What is happening in the BTC market?',
+        'Which risks should I consider before following this trader?',
+        "How consistent has this trader's historical performance been?",
+        'Explain the risks associated with this hypothetical position.',
+        "What contributed to this simulation's profit or loss?",
       ],
     },
   ]);
@@ -718,7 +798,7 @@ ${
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = (textToSend || inputValue).trim();
     if (!text) return;
 
@@ -733,27 +813,49 @@ ${
     if (!textToSend) setInputValue('');
     setIsTyping(true);
 
-    setTimeout(() => {
-      const response: CopilotResponseOutput = generateCopilotResponse(text, {
+    try {
+      const response = await queryMensehIntelligence(text, {
         activeTrader,
         allTraders,
+        markets,
         userCapital,
         currentView: 'copilot',
       });
 
       const copilotMsg: CopilotMessage = {
-        id: `copilot-${Date.now()}`,
+        id: `menseh-${Date.now()}`,
         sender: 'copilot',
         text: response.text,
         timestamp: Date.now(),
         warningBanner: response.warningBanner,
-        suggestedChips: response.suggestedChips,
+        suggestedChips: response.suggestedChips || defaultChips,
         actionCard: response.actionCard,
       };
 
       setMessages((prev) => [...prev, copilotMsg]);
+    } catch {
+      const fallback = generateGroundedIntelligence(text, {
+        activeTrader,
+        allTraders,
+        markets,
+        userCapital,
+        currentView: 'copilot',
+      });
+
+      const copilotMsg: CopilotMessage = {
+        id: `menseh-${Date.now()}`,
+        sender: 'copilot',
+        text: fallback.text,
+        timestamp: Date.now(),
+        warningBanner: fallback.warningBanner,
+        suggestedChips: fallback.suggestedChips || defaultChips,
+        actionCard: fallback.actionCard,
+      };
+
+      setMessages((prev) => [...prev, copilotMsg]);
+    } finally {
       setIsTyping(false);
-    }, 450);
+    }
   };
 
   const handleResetChat = () => {
@@ -761,16 +863,9 @@ ${
       {
         id: `welcome-${Date.now()}`,
         sender: 'copilot',
-        text: `Conversation reset. Ask about risk models, simulate parameters for your $${userCapital.toLocaleString()} account, or pick a trader to analyze.`,
+        text: `Mensah Intelligence reset. Ask about perpetual market conditions, analyze lead trader consistency, or evaluate copy-trade risks.`,
         timestamp: Date.now(),
-        suggestedChips: [
-          activeTrader
-            ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-            : 'Compare top traders',
-          'Explain risks',
-          `How to size a $${userCapital.toLocaleString()} account?`,
-          'Fixed Ratio vs Fixed Amount',
-        ],
+        suggestedChips: defaultChips,
       },
     ]);
   };
@@ -778,6 +873,9 @@ ${
   const activeVol = activeTrader ? getTrader24hVolatility(activeTrader) : null;
   const activeDrawdown = activeTrader ? getDrawdown30d(activeTrader) : 15;
   const activeScore = activeTrader ? parseFloat(activeTrader.copy_score || '0') : 80;
+  const activeWinRate = activeTrader ? getTraderWinRate(activeTrader) : 50;
+  const activeProfitFactor = activeTrader ? getTraderProfitFactor(activeTrader) : 1.5;
+  const activeRiskClass = activeTrader ? getTraderRiskClassification(activeTrader) : null;
 
   // Sizing Calculations for sidebar
   const peakPos = activeTrader ? Math.max(1, Math.round(parseFloat(activeTrader.peak_concurrent_entries || '3'))) : 3;
@@ -794,11 +892,14 @@ ${
               <Bot className="w-4 h-4" />
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              Strike Copilot Intelligence Desk
+              Mensah Intelligence Desk
             </h1>
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00f29d]/15 text-[#00f29d] border border-[#00f29d]/30">
+              Strike Perpetual Analytics
+            </span>
           </div>
           <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-            Calm, data-grounded guidance for risk assessment, position sizing, and drawdown evaluation before risking capital.
+            Data-grounded intelligence for Strike perpetual market dynamics, transparent risk scoring, consistency auditing, and downside simulation attribution.
           </p>
         </div>
 
@@ -808,14 +909,23 @@ ${
             className="px-3.5 py-2 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            <span>New Chat</span>
+            <span>New Inquire</span>
           </button>
+          {onNavigateToDashboard && (
+            <button
+              onClick={onNavigateToDashboard}
+              className="px-3.5 py-2 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>Markets Dashboard</span>
+            </button>
+          )}
           <button
             onClick={onNavigateToDiscovery}
             className="px-3.5 py-2 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
           >
             <Compass className="w-3.5 h-3.5" />
-            <span>Browse All Traders</span>
+            <span>Discover Traders</span>
           </button>
         </div>
       </div>
@@ -844,12 +954,12 @@ ${
                   )}
                 </div>
               ) : (
-                <span className="text-slate-400">General Portfolio & Capital Sizing</span>
+                <span className="text-slate-400">Perpetual Markets & Risk Framework</span>
               )}
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-slate-500 text-xs">Account Capital:</span>
+              <span className="text-slate-500 text-xs">Hypothetical Capital:</span>
               <div className="flex items-center gap-1 bg-[#121722] border border-[#1c2438] rounded-lg px-2 py-1 text-xs">
                 <span className="text-slate-400">$</span>
                 <input
@@ -870,7 +980,14 @@ ${
                 message={msg}
                 onSendChip={handleSend}
                 onActionClick={(actionCard) => {
-                  onNavigateToSimulator(activeTrader || undefined);
+                  if (actionCard?.type === 'market_link' || actionCard?.title?.toLowerCase().includes('market')) {
+                    if (onNavigateToDashboard) onNavigateToDashboard();
+                  } else if (actionCard?.type === 'trader_link' || actionCard?.title?.toLowerCase().includes('trader')) {
+                    if (activeTrader) onSelectTrader(activeTrader);
+                    else onNavigateToDiscovery();
+                  } else if (onNavigateToSimulator) {
+                    onNavigateToSimulator(activeTrader || undefined);
+                  }
                 }}
               />
             ))}
@@ -887,7 +1004,7 @@ ${
                     <span className="w-1.5 h-1.5 rounded-full bg-[#00f29d] animate-bounce [animation-delay:300ms]" />
                   </div>
                   <span className="text-slate-400 text-xs ml-1">
-                    Evaluating drawdown curves & liquidity factors...
+                    Querying verified Strike market data & risk models...
                   </span>
                 </div>
               </div>
@@ -896,46 +1013,44 @@ ${
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Suggested Prompts Strip */}
+          {/* Suggested Prompts Strip (5 Core User Questions) */}
           <div className="p-3 bg-[#0a0d14] border-t border-[#1c2438] overflow-x-auto no-scrollbar">
             <div className="flex gap-2">
+              <button
+                onClick={() => handleSend('What is happening in the BTC market?')}
+                className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
+              >
+                What is happening in the BTC market?
+              </button>
               <button
                 onClick={() =>
                   handleSend(
                     activeTrader
-                      ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-                      : 'Compare top traders'
+                      ? `Which risks should I consider before following ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}?`
+                      : 'Which risks should I consider before following this trader?'
                   )
                 }
                 className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
               >
-                {activeTrader
-                  ? `Evaluate ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}`
-                  : 'Compare top traders'}
+                Which risks should I consider?
               </button>
               <button
-                onClick={() => handleSend(`How to size a $${userCapital.toLocaleString()} account?`)}
+                onClick={() => handleSend("How consistent has this trader's historical performance been?")}
                 className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
               >
-                How to size ${userCapital.toLocaleString()}?
+                How consistent is this trader?
               </button>
               <button
-                onClick={() => handleSend('Explain risks')}
+                onClick={() => handleSend('Explain the risks associated with this hypothetical position.')}
                 className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
               >
-                Explain risks
+                Explain position risks
               </button>
               <button
-                onClick={() => handleSend('Fixed Ratio vs Fixed Amount')}
+                onClick={() => handleSend("What contributed to this simulation's profit or loss?")}
                 className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
               >
-                Fixed Ratio vs Fixed Amount
-              </button>
-              <button
-                onClick={() => handleSend('Explain 24h Volatility Alerts')}
-                className="px-3 py-1.5 rounded-xl bg-[#121722] hover:bg-[#19202f] text-slate-300 hover:text-white border border-[#1c2438] hover:border-[#00f29d]/40 text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 font-medium"
-              >
-                Explain 24h Volatility
+                What contributed to simulation PnL?
               </button>
             </div>
           </div>
@@ -954,7 +1069,7 @@ ${
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                placeholder="Ask Strike Copilot about risk models, position sizing, or trader evaluation..."
+                placeholder="Ask Mensah Intelligence about perpetual markets, risk models, consistency, or position sizing..."
                 className="flex-1 bg-[#121722] border border-[#1c2438] focus:border-[#00f29d]/60 rounded-xl px-4 py-3 text-xs text-white placeholder-slate-500 font-sans outline-none transition-colors"
               />
               <button
@@ -967,23 +1082,25 @@ ${
               </button>
             </form>
             <div className="text-[11px] text-slate-500 mt-2 text-center">
-              Strike Copilot is designed to protect your capital and prevent reckless copy trading.
+              Mensah Intelligence never executes live trades or guarantees returns. All metrics derived from verified Strike feeds.
             </div>
           </div>
         </div>
 
-        {/* Right Column: Trader Intelligence Sidebar (4 cols) */}
+        {/* Right Column: Trader Intelligence & Live Markets Sidebar (4 cols) */}
         <div className="lg:col-span-4 space-y-5">
-          {/* Active Target Card */}
+          {/* Target Trader Profile & Transparent Risk Card */}
           {activeTrader ? (
             <div className="bg-[#121722] border border-[#1c2438] rounded-2xl p-5 shadow-lg space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-[#1c2438]">
                 <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                  Target Intelligence
+                  Target Trader Intelligence
                 </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#19202f] text-slate-300 border border-[#273248]">
-                  {activeTrader.platform?.toUpperCase() || 'STRIKE'}
-                </span>
+                {activeRiskClass && (
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${activeRiskClass.badgeClass} border`}>
+                    {activeRiskClass.label}
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center justify-between gap-4">
@@ -1007,33 +1124,40 @@ ${
                       24h Drawdown Spike: -{activeVol.drawdown24hPct.toFixed(1)}%
                     </div>
                     <div className="text-[11px] text-slate-300 mt-0.5">
-                      Intraday pullback detected. Stabilizing before copying is advised.
+                      Intraday pullback detected. Past positive returns do not guarantee safety.
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Risk & Return Metrics */}
+              {/* Verified Risk & Return Metrics */}
               <div className="space-y-3 pt-2">
                 <RiskBarGauge drawdownPct={activeDrawdown} showDetails={true} />
 
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="p-3 rounded-xl bg-[#0a0d14] border border-[#1c2438]">
-                    <div className="text-[11px] text-slate-400">30d Net ROI</div>
+                <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                  <div className="p-2.5 rounded-xl bg-[#0a0d14] border border-[#1c2438]">
+                    <div className="text-[10px] text-slate-400">Win Rate</div>
+                    <div className="text-xs font-bold text-white mt-0.5 tabular-nums">
+                      {activeWinRate}%
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#0a0d14] border border-[#1c2438]">
+                    <div className="text-[10px] text-slate-400">Profit Factor</div>
+                    <div className="text-xs font-bold text-white mt-0.5 tabular-nums">
+                      {(activeProfitFactor ?? 1.5).toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#0a0d14] border border-[#1c2438]">
+                    <div className="text-[10px] text-slate-400">30d ROI</div>
                     <div
-                      className={`text-sm font-bold tabular-nums mt-0.5 ${
+                      className={`text-xs font-bold tabular-nums mt-0.5 ${
                         parseFloat(activeTrader.roi?.['30d'] || '0') >= 0 ? 'text-[#00f29d]' : 'text-rose-400'
                       }`}
                     >
                       {parseFloat(activeTrader.roi?.['30d'] || '0') >= 0 ? '+' : ''}
                       {parseFloat(activeTrader.roi?.['30d'] || '0').toFixed(1)}%
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-[#0a0d14] border border-[#1c2438]">
-                    <div className="text-[11px] text-slate-400">Trading Style</div>
-                    <div className="text-sm font-bold text-white mt-0.5 truncate">
-                      {activeTrader.style || 'Discretionary'}
                     </div>
                   </div>
                 </div>
@@ -1042,22 +1166,42 @@ ${
               {/* Position Sizing Blueprint */}
               <div className="p-3.5 rounded-xl bg-[#0a0d14] border border-[#1c2438] space-y-2">
                 <div className="text-xs font-bold text-white flex items-center justify-between">
-                  <span>Recommended Sizing</span>
+                  <span>Downside Sizing Blueprint</span>
                   <span className="text-[#00f29d] font-mono">${userCapital.toLocaleString()} Account</span>
                 </div>
                 <div className="text-xs text-slate-300 leading-relaxed">
-                  Allocate <strong className="text-white">~${conservativeSize.toLocaleString()}</strong> ({conservativePct}%) per trade with <strong className="text-white">1x–2x</strong> max leverage. Keep 35% in reserve.
+                  Allocate <strong className="text-white">~${conservativeSize.toLocaleString()}</strong> ({conservativePct}%) per trade with <strong className="text-white">1x–2x</strong> max leverage to tolerate historical drawdowns.
                 </div>
               </div>
 
-              {/* Actions */}
-              <div className="pt-2 space-y-2">
+              {/* Quick Intelligence Questions for this Trader */}
+              <div className="pt-1 flex flex-col gap-1.5">
+                <button
+                  onClick={() =>
+                    handleSend(
+                      `Which risks should I consider before following ${activeTrader.display_name || truncateAddress(activeTrader.address, 4)}?`
+                    )
+                  }
+                  className="w-full py-1.5 px-3 bg-[#19202f] hover:bg-[#222c40] text-slate-200 text-xs font-medium rounded-xl text-left flex items-center justify-between transition-colors cursor-pointer border border-[#1c2438]"
+                >
+                  <span>Evaluate downside risks</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#00f29d]" />
+                </button>
+                <button
+                  onClick={() =>
+                    handleSend("How consistent has this trader's historical performance been?")
+                  }
+                  className="w-full py-1.5 px-3 bg-[#19202f] hover:bg-[#222c40] text-slate-200 text-xs font-medium rounded-xl text-left flex items-center justify-between transition-colors cursor-pointer border border-[#1c2438]"
+                >
+                  <span>Audit performance consistency</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#00f29d]" />
+                </button>
                 <button
                   onClick={() => onNavigateToSimulator(activeTrader)}
-                  className="w-full py-2.5 px-4 bg-[#00f29d] hover:bg-[#50ffae] text-[#003921] font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-[#00f29d]/20"
+                  className="w-full py-2 px-3 bg-[#00f29d] hover:bg-[#50ffae] text-[#003921] font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-[#00f29d]/20 mt-1"
                 >
-                  <Calculator className="w-4 h-4" />
-                  <span>Launch Simulation</span>
+                  <Calculator className="w-3.5 h-3.5" />
+                  <span>Launch Downside Simulator</span>
                 </button>
               </div>
             </div>
@@ -1066,8 +1210,55 @@ ${
               <Bot className="w-8 h-8 text-[#00f29d] mx-auto mb-2" />
               <h3 className="text-sm font-bold text-white">No Trader Selected</h3>
               <p className="text-xs text-slate-400 mt-1">
-                Select a candidate below to view real-time risk gauges and calibrated sizing.
+                Select a lead trader below or ask about live Strike perpetual markets.
               </p>
+            </div>
+          )}
+
+          {/* Live Strike Perpetual Markets Quick Card */}
+          {markets.length > 0 && (
+            <div className="bg-[#121722] border border-[#1c2438] rounded-2xl p-5 shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#00f29d] animate-pulse" />
+                  <span>Strike Perpetual Markets</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">Live Feeds</span>
+              </div>
+
+              <div className="space-y-1.5">
+                {markets.slice(0, 4).map((m) => (
+                  <div
+                    key={m.symbol}
+                    className="p-2.5 rounded-xl bg-[#0a0d14] border border-[#1c2438] flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-white">{m.symbol}</div>
+                      <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                        {formatUSD(m.price)}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-semibold font-mono ${
+                          m.priceChangePercent >= 0 ? 'text-[#00f29d]' : 'text-rose-400'
+                        }`}
+                      >
+                        {m.priceChangePercent >= 0 ? '+' : ''}
+                        {m.priceChangePercent.toFixed(2)}%
+                      </span>
+                      <button
+                        onClick={() => handleSend(`What is happening in the ${m.baseAsset} market?`)}
+                        className="px-2 py-1 rounded bg-[#19202f] hover:bg-[#222c40] text-[10px] font-medium text-slate-300 hover:text-white border border-[#273248] transition-colors cursor-pointer"
+                        title={`Analyze ${m.symbol}`}
+                      >
+                        Analyze
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1075,12 +1266,12 @@ ${
           <div className="bg-[#121722] border border-[#1c2438] rounded-2xl p-5 shadow-lg space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Select Trader to Evaluate
+                Select Trader to Analyze
               </span>
               <span className="text-xs text-slate-500">{allTraders.length} available</span>
             </div>
 
-            <div className="space-y-1.5 max-h-72 overflow-y-auto no-scrollbar">
+            <div className="space-y-1.5 max-h-64 overflow-y-auto no-scrollbar">
               {allTraders.slice(0, 7).map((trader) => {
                 const isSelected = activeTrader?.address === trader.address;
                 const score = parseFloat(trader.copy_score || '0');
@@ -1092,7 +1283,9 @@ ${
                     key={trader.address}
                     onClick={() => {
                       onSelectTrader(trader);
-                      handleSend(`Evaluate ${trader.display_name || truncateAddress(trader.address, 4)}`);
+                      handleSend(
+                        `Which risks should I consider before following ${trader.display_name || truncateAddress(trader.address, 4)}?`
+                      );
                     }}
                     className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between text-xs transition-all cursor-pointer ${
                       isSelected
@@ -1135,3 +1328,4 @@ ${
     </div>
   );
 };
+

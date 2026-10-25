@@ -368,3 +368,150 @@ export function getTrader24hVolatility(trader: Trader): VolatilityAlertInfo {
     spikeReason: 'Stable intraday performance within typical historical bounds.',
   };
 }
+
+/**
+ * Extract traceable win rate / consistency percentage from underlying breakdown
+ */
+export function getTraderWinRate(trader: Trader): number | null {
+  const breakdown = trader.copy_score_breakdown || trader.copy_score_breakdowns?.['30d'];
+  if (breakdown?.consistency_30d?.raw) {
+    const parsed = parseFloat(breakdown.consistency_30d.raw);
+    if (!isNaN(parsed) && parsed >= 0) return parsed <= 1.0 ? parsed * 100 : parsed;
+  }
+  if (breakdown?.consistency_7d?.raw) {
+    const parsed = parseFloat(breakdown.consistency_7d.raw);
+    if (!isNaN(parsed) && parsed >= 0) return parsed <= 1.0 ? parsed * 100 : parsed;
+  }
+  // Calculate from equity curve positive periods if breakdown raw is missing
+  const curve = trader.equity_curve_30d || [];
+  if (curve.length >= 4) {
+    let positiveSteps = 0;
+    let totalSteps = 0;
+    for (let i = 1; i < curve.length; i++) {
+      const prev = parseFloat(curve[i - 1][1]);
+      const curr = parseFloat(curve[i][1]);
+      if (!isNaN(prev) && !isNaN(curr) && prev > 0) {
+        totalSteps++;
+        if (curr >= prev) positiveSteps++;
+      }
+    }
+    if (totalSteps > 0) {
+      return (positiveSteps / totalSteps) * 100;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract traceable profit factor (ratio of gross gains to gross losses)
+ */
+export function getTraderProfitFactor(trader: Trader): number | null {
+  const breakdown = trader.copy_score_breakdown || trader.copy_score_breakdowns?.['30d'];
+  if (breakdown?.profit_factor?.raw) {
+    const parsed = parseFloat(breakdown.profit_factor.raw);
+    if (!isNaN(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Extract active trading days recorded in the analysis window
+ */
+export function getTraderActiveDays(trader: Trader): number {
+  const breakdown = trader.copy_score_breakdown || trader.copy_score_breakdowns?.['30d'];
+  if (breakdown?.active_days_7d?.raw) {
+    const parsed = parseFloat(breakdown.active_days_7d.raw);
+    if (!isNaN(parsed) && parsed > 0) return Math.min(30, Math.round(parsed * 7));
+  }
+  if (trader.fills_window_days) {
+    const days = parseFloat(trader.fills_window_days);
+    if (!isNaN(days) && days > 0) return Math.max(1, Math.round(days * 20));
+  }
+  return Math.min(30, (trader.equity_curve_30d || []).length);
+}
+
+export interface TraderRiskClassification {
+  tier: 'low' | 'moderate' | 'high' | 'elite';
+  label: string;
+  badgeClass: string;
+  borderClass: string;
+  description: string;
+  factors: string[];
+}
+
+/**
+ * Transparent Risk Scoring System
+ * Evaluates Drawdown, Volatility, Consistency, and Asset Concentration.
+ * Explicitly DOES NOT classify a trader as safe simply because they are profitable.
+ */
+export function getTraderRiskClassification(trader: Trader): TraderRiskClassification {
+  const score = parseFloat(trader.copy_score || '0');
+  const maxDd = getDrawdown30d(trader);
+  const vol = getTrader24hVolatility(trader);
+  const winRate = getTraderWinRate(trader);
+  const roi30 = parseFloat(trader.roi?.['30d'] || '0') * 100;
+
+  const factors: string[] = [];
+
+  if (maxDd >= 25) {
+    factors.push(`Severe drawdown exposure: Historical max drawdown is -${maxDd.toFixed(1)}%.`);
+  } else if (maxDd >= 15) {
+    factors.push(`Moderate drawdown: Historical max drawdown is -${maxDd.toFixed(1)}%.`);
+  } else {
+    factors.push(`Controlled drawdown: Limited to -${maxDd.toFixed(1)}% over 30 days.`);
+  }
+
+  if (vol.hasAlert) {
+    factors.push(`Intraday volatility: -${vol.drawdown24hPct.toFixed(1)}% drop in the last 24h.`);
+  }
+
+  if (winRate !== null) {
+    factors.push(`Consistency: ${winRate.toFixed(1)}% profitable observation periods.`);
+  }
+
+  // Elite Tier: Score >= 70, Drawdown < 18%, No high 24h spike
+  if (score >= 70 && maxDd <= 18 && vol.severity !== 'high') {
+    return {
+      tier: 'elite',
+      label: 'Elite (Top Tier)',
+      badgeClass: 'text-emerald-400 bg-emerald-950/40 border-emerald-500/30',
+      borderClass: 'border-emerald-500/40',
+      description: 'Disciplined drawdown control, consistent multi-day returns, and liquid execution profile.',
+      factors,
+    };
+  }
+
+  // Low Risk: Drawdown < 15%, Score >= 55
+  if (maxDd < 15 && score >= 50 && vol.severity !== 'high') {
+    return {
+      tier: 'low',
+      label: 'Low Risk',
+      badgeClass: 'text-cyan-400 bg-cyan-950/40 border-cyan-500/30',
+      borderClass: 'border-cyan-500/40',
+      description: 'Tight drawdown containment under 15% with steady risk management.',
+      factors,
+    };
+  }
+
+  // High Risk: Drawdown > 25% or Score < 45 or High 24h Volatility Alert
+  if (maxDd >= 25 || score < 45 || vol.severity === 'high') {
+    return {
+      tier: 'high',
+      label: 'High Volatility / High Risk',
+      badgeClass: 'text-rose-400 bg-rose-950/40 border-rose-500/30',
+      borderClass: 'border-rose-500/40',
+      description: 'Elevated drawdown exposure (>25%) or sharp intraday dips. High risk of capital distress.',
+      factors,
+    };
+  }
+
+  // Moderate Risk: Default
+  return {
+    tier: 'moderate',
+    label: 'Moderate Risk',
+    badgeClass: 'text-amber-400 bg-amber-950/40 border-amber-500/30',
+    borderClass: 'border-amber-500/40',
+    description: 'Balanced risk profile with typical 15–25% drawdown fluctuations in perpetual markets.',
+    factors,
+  };
+}

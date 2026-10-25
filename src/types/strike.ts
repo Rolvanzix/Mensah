@@ -100,16 +100,24 @@ export type SortField =
   | 'pnl_30d'
   | 'max_drawdown'
   | 'roi_30d'
+  | 'roi_7d'
+  | 'roi_all'
+  | 'win_rate'
   | 'account_value'
   | 'volume_30d';
 
 export type SortOrder = 'desc' | 'asc';
+
+export type RiskTier = 'all' | 'low' | 'moderate' | 'high' | 'elite';
+export type PerformanceFilter = 'all' | 'profitable_30d' | 'profitable_7d' | 'low_drawdown';
 
 export interface FilterState {
   platform: 'all' | 'hyperliquid' | 'strike';
   minCopyScore: number;
   style: string;
   bias: string;
+  riskTier?: RiskTier;
+  performanceFilter?: PerformanceFilter;
   recommendedOnly: boolean;
   searchQuery: string;
   sortBy: SortField;

@@ -1,21 +1,34 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { FilterState, Trader } from './types/strike';
+import { MarketSummary } from './types/market';
 import { fetchDiscoverTraders, getDrawdown30d } from './services/strikeApi';
+import { fetchStrikeMarkets } from './services/strikeMarketApi';
 import { getWatchlist, toggleWatchlist } from './utils/watchlist';
-import { Header, NavigationTab } from './components/Header';
+import { Sidebar, NavRoute } from './components/Sidebar';
+import { TopBar } from './components/TopBar';
+import { MarketTickerBar } from './components/MarketTickerBar';
+import { MarketsView } from './components/MarketsView';
+import { SettingsView } from './components/SettingsView';
+import { Dashboard } from './components/Dashboard';
 import { MarketStatsSummary } from './components/MarketStatsSummary';
 import { DiscoveryFilters } from './components/DiscoveryFilters';
 import { TraderCard } from './components/TraderCard';
 import { TraderTable } from './components/TraderTable';
 import { TraderDetailModal } from './components/TraderDetailModal';
-import { CopySimulator } from './components/CopySimulator';
+import { SimulatorView } from './components/simulator/SimulatorView';
 import { WatchlistView } from './components/WatchlistView';
 import { StrikeCopilot, StrikeCopilotWorkspace } from './components/StrikeCopilot';
+import { useAuth } from './contexts/AuthContext';
 import { AlertCircle, Compass, RefreshCw } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavigationTab>('discovery');
+  const { firebaseUser } = useAuth();
+  const userId = firebaseUser?.uid || 'guest_local_user';
+
+  const [currentRoute, setCurrentRoute] = useState<NavRoute>('home');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [traders, setTraders] = useState<Trader[]>([]);
+  const [markets, setMarkets] = useState<MarketSummary[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedTrader, setSelectedTrader] = useState<Trader | null>(null);
@@ -25,7 +38,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isCopilotOpen, setIsCopilotOpen] = useState<boolean>(false);
   const [copilotInitialPrompt, setCopilotInitialPrompt] = useState<string | undefined>(undefined);
-  const [userCapital, setUserCapital] = useState<number>(2000);
+  const [userCapital, setUserCapital] = useState<number>(10000);
 
   // Filter State
   const [filters, setFilters] = useState<FilterState>({
@@ -45,19 +58,29 @@ export default function App() {
     setFilters((prev) => ({ ...prev, searchQuery }));
   }, [searchQuery]);
 
-  // Load watchlist on mount
+  // Load watchlist on mount or user switch
   useEffect(() => {
-    setWatchlist(getWatchlist());
+    setWatchlist(getWatchlist(userId));
 
     const handleWatchlistUpdate = (e: any) => {
-      if (e.detail) setWatchlist(e.detail);
+      if (e?.detail) {
+        if (e.detail.userId && e.detail.userId !== userId) return;
+        const list = Array.isArray(e.detail) ? e.detail : e.detail.updated || [];
+        setWatchlist(list);
+      }
+    };
+
+    const handleUserSwitch = () => {
+      setWatchlist(getWatchlist(userId));
     };
 
     window.addEventListener('strike_watchlist_updated', handleWatchlistUpdate);
+    window.addEventListener('mensah_user_switched', handleUserSwitch);
     return () => {
       window.removeEventListener('strike_watchlist_updated', handleWatchlistUpdate);
+      window.removeEventListener('mensah_user_switched', handleUserSwitch);
     };
-  }, []);
+  }, [userId]);
 
   // Fetch real Strike discovery data
   const loadTraders = async () => {
@@ -79,22 +102,36 @@ export default function App() {
 
   useEffect(() => {
     loadTraders();
+
+    // Fetch verified Strike markets for Intelligence layer
+    fetchStrikeMarkets().then((res) => {
+      if (res.markets && res.markets.length > 0) {
+        setMarkets(res.markets);
+      }
+    });
   }, []);
 
   const handleToggleWatchlist = (address: string) => {
-    toggleWatchlist(address);
-    setWatchlist(getWatchlist());
+    toggleWatchlist(address, userId);
+    setWatchlist(getWatchlist(userId));
   };
 
   const handleSimulateTrader = (trader: Trader) => {
     setSelectedTrader(trader);
-    setActiveTab('simulator');
+    setCurrentRoute('simulator');
   };
 
   const handleOpenCopilot = (trader?: Trader, prompt?: string) => {
     if (trader) setSelectedTrader(trader);
     if (prompt) setCopilotInitialPrompt(prompt);
     setIsCopilotOpen(true);
+  };
+
+  const handleNavigate = (route: string) => {
+    if (route === 'dashboard') setCurrentRoute('home');
+    else if (route === 'copilot') setCurrentRoute('intelligence');
+    else if (route === 'practice') setCurrentRoute('simulator');
+    else setCurrentRoute(route as NavRoute);
   };
 
   // Filtered & Sorted Traders
@@ -128,6 +165,40 @@ export default function App() {
           }
         }
 
+        // Risk Tier filter
+        if (filters.riskTier && filters.riskTier !== 'all') {
+          const maxDd = getDrawdown30d(trader);
+          if (filters.riskTier === 'elite' && (score < 70 || maxDd > 18)) {
+            return false;
+          }
+          if (filters.riskTier === 'low' && (maxDd >= 15 || score < 50)) {
+            return false;
+          }
+          if (filters.riskTier === 'moderate' && (maxDd < 15 || maxDd >= 25)) {
+            return false;
+          }
+          if (filters.riskTier === 'high' && maxDd < 25 && score >= 45) {
+            return false;
+          }
+        }
+
+        // Performance Filter
+        if (filters.performanceFilter && filters.performanceFilter !== 'all') {
+          const roi30 = parseFloat(trader.roi?.['30d'] || '0');
+          const roi7 = parseFloat(trader.roi?.['7d'] || '0');
+          const maxDd = getDrawdown30d(trader);
+
+          if (filters.performanceFilter === 'profitable_30d' && roi30 <= 0) {
+            return false;
+          }
+          if (filters.performanceFilter === 'profitable_7d' && roi7 <= 0) {
+            return false;
+          }
+          if (filters.performanceFilter === 'low_drawdown' && maxDd > 12) {
+            return false;
+          }
+        }
+
         // Recommended only
         if (filters.recommendedOnly) {
           if (trader.recommended_direction !== 'copy') {
@@ -142,12 +213,12 @@ export default function App() {
           }
         }
 
-        // Search query
+        // Search query (name, address, or traded assets)
         if (filters.searchQuery.trim()) {
           const q = filters.searchQuery.toLowerCase().trim();
           const matchAddress = trader.address?.toLowerCase().includes(q);
           const matchName = trader.display_name?.toLowerCase().includes(q);
-          const matchAsset = trader.top_assets?.some((a) => a.asset.toLowerCase().includes(q));
+          const matchAsset = trader.top_assets?.some((a) => a.asset.toLowerCase().includes(q) || a.symbol?.toLowerCase().includes(q));
           if (!matchAddress && !matchName && !matchAsset) {
             return false;
           }
@@ -172,6 +243,21 @@ export default function App() {
             valA = parseFloat(a.roi?.['30d'] || '0');
             valB = parseFloat(b.roi?.['30d'] || '0');
             break;
+          case 'roi_7d':
+            valA = parseFloat(a.roi?.['7d'] || '0');
+            valB = parseFloat(b.roi?.['7d'] || '0');
+            break;
+          case 'roi_all':
+            valA = parseFloat(a.roi?.['all'] || '0');
+            valB = parseFloat(b.roi?.['all'] || '0');
+            break;
+          case 'win_rate': {
+            const wrA = a.copy_score_breakdown?.consistency_30d?.raw ? parseFloat(a.copy_score_breakdown.consistency_30d.raw) : 0;
+            const wrB = b.copy_score_breakdown?.consistency_30d?.raw ? parseFloat(b.copy_score_breakdown.consistency_30d.raw) : 0;
+            valA = wrA;
+            valB = wrB;
+            break;
+          }
           case 'max_drawdown':
             valA = getDrawdown30d(a);
             valB = getDrawdown30d(b);
@@ -194,194 +280,251 @@ export default function App() {
   }, [traders, filters, watchlist]);
 
   return (
-    <div className="min-h-screen bg-[#0a0d14] text-[#e1e2eb] flex flex-col font-sans selection:bg-[#00f29d]/30 selection:text-white">
-      {/* Clean Top Bar Header */}
-      <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+    <div className="min-h-screen bg-[#f8fafc] text-slate-900 flex font-sans antialiased">
+      {/* Left Navigation Sidebar matching reference design */}
+      <Sidebar
+        currentRoute={currentRoute}
+        onNavigate={(r) => {
+          setCurrentRoute(r);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
+        isOpenMobile={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
         watchlistCount={watchlist.length}
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
-        onOpenCopilot={() => setIsCopilotOpen(true)}
       />
 
-      {/* Main Viewport Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        {/* TAB 1: DISCOVERY */}
-        {activeTab === 'discovery' && (
-          <div className="space-y-6">
-            {/* Real Stats Summary Ribbon */}
-            <MarketStatsSummary
+      {/* Main Page Area offset by sidebar width on large screens */}
+      <div className="flex-1 lg:pl-64 flex flex-col min-h-screen">
+        {/* Top bar with search input, notifications, and JD profile badge */}
+        <TopBar
+          onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          onSearchSubmit={(q) => {
+            setSearchQuery(q);
+            if (currentRoute !== 'discovery') setCurrentRoute('discovery');
+          }}
+          userCapital={userCapital}
+        />
+
+        {/* Central Content Area */}
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto pb-24">
+          {/* ROUTE: HOME / DASHBOARD */}
+          {currentRoute === 'home' && (
+            <Dashboard
               traders={traders}
+              watchlistAddresses={watchlist}
+              onToggleWatchlist={handleToggleWatchlist}
               onSelectTrader={(t) => setDetailModalTrader(t)}
+              onSimulateTrader={handleSimulateTrader}
+              onNavigateToTab={handleNavigate}
+              onOpenCopilot={handleOpenCopilot}
+              isDemonstrationData={false}
             />
+          )}
 
-            {/* Title & Quick Controls */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#1c2438]">
-              <div>
-                <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-                  Trader Discovery
-                </h1>
-                <p className="text-xs text-slate-400 mt-1">
-                  Verified traders on Strike and Hyperliquid evaluated by risk-adjusted return and consistency.
-                </p>
-              </div>
+          {/* ROUTE: DISCOVER TRADERS */}
+          {currentRoute === 'discovery' && (
+            <div className="space-y-6">
+              <MarketStatsSummary
+                traders={traders}
+                onSelectTrader={(t) => setDetailModalTrader(t)}
+              />
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={loadTraders}
-                  disabled={loading}
-                  className="px-3.5 py-2 bg-[#121722] hover:bg-[#19202f] border border-[#1c2438] hover:border-[#00f29d]/40 text-xs font-medium text-slate-300 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#00f29d]' : 'text-slate-400'}`} />
-                  <span>Refresh Feed</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Error Message if any */}
-            {error && (
-              <div className="bg-rose-950/25 border border-rose-500/40 rounded-2xl p-4 flex items-center justify-between text-xs text-rose-300">
-                <div className="flex items-center gap-2.5">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                  <span>{error}</span>
+              {/* Title & Quick Controls */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200">
+                <div>
+                  <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
+                    Trader Discovery
+                  </h1>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Verified traders on Strike and Hyperliquid evaluated by risk-adjusted return and consistency.
+                  </p>
                 </div>
-                <button
-                  onClick={loadTraders}
-                  className="px-3 py-1 bg-rose-900/40 border border-rose-500/40 rounded-lg text-xs font-semibold hover:bg-rose-900/60 transition-colors cursor-pointer"
-                >
-                  Retry
-                </button>
-              </div>
-            )}
 
-            {/* Discovery Filters */}
-            <DiscoveryFilters
-              filters={filters}
-              onChange={setFilters}
-              viewMode={viewMode}
-              setViewMode={setViewMode}
-              totalTraders={traders.length}
-              filteredCount={filteredTraders.length}
-            />
-
-            {/* Loading Skeletons */}
-            {loading && traders.length === 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {[...Array(6)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="bg-[#121722] rounded-2xl p-5 h-72 border border-[#1c2438] animate-pulse flex flex-col justify-between"
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={loadTraders}
+                    disabled={loading}
+                    className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 hover:border-emerald-300 text-xs font-medium text-slate-700 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
                   >
-                    <div className="space-y-3">
-                      <div className="h-4 bg-[#19202f] rounded w-1/2"></div>
-                      <div className="h-3 bg-[#19202f]/60 rounded w-1/3"></div>
-                      <div className="h-14 bg-[#0a0d14] rounded-xl mt-4"></div>
+                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-600' : 'text-slate-400'}`} />
+                    <span>Refresh Feed</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Error Message if any */}
+              {error && (
+                <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center justify-between text-xs text-rose-700">
+                  <div className="flex items-center gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                  <button
+                    onClick={loadTraders}
+                    className="px-3 py-1 bg-rose-100 border border-rose-300 rounded-lg text-xs font-semibold hover:bg-rose-200 transition-colors cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Discovery Filters */}
+              <DiscoveryFilters
+                filters={filters}
+                onChange={setFilters}
+                viewMode={viewMode}
+                setViewMode={setViewMode}
+                totalTraders={traders.length}
+                filteredCount={filteredTraders.length}
+              />
+
+              {/* Loading Skeletons */}
+              {loading && traders.length === 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {[...Array(6)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="bg-white rounded-2xl p-5 h-72 border border-slate-200 animate-pulse flex flex-col justify-between"
+                    >
+                      <div className="space-y-3">
+                        <div className="h-4 bg-slate-200 rounded w-1/2"></div>
+                        <div className="h-3 bg-slate-100 rounded w-1/3"></div>
+                        <div className="h-14 bg-slate-50 rounded-xl mt-4"></div>
+                      </div>
+                      <div className="h-9 bg-slate-100 rounded-xl mt-4"></div>
                     </div>
-                    <div className="h-9 bg-[#19202f]/60 rounded-xl mt-4"></div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
 
-            {/* Empty State */}
-            {!loading && filteredTraders.length === 0 && (
-              <div className="bg-[#121722] border border-[#1c2438] rounded-2xl p-12 text-center text-slate-400">
-                <Compass className="w-12 h-12 mx-auto text-slate-600 mb-3" />
-                <h3 className="text-base font-bold text-white mb-1">No Traders Match Your Filters</h3>
-                <p className="text-xs text-slate-400 max-w-sm mx-auto mb-4">
-                  Try lowering your minimum score or clearing filters to see more traders.
-                </p>
-                <button
-                  onClick={() =>
-                    setFilters({
-                      platform: 'all',
-                      minCopyScore: 0,
-                      style: 'all',
-                      bias: 'all',
-                      recommendedOnly: false,
-                      searchQuery: '',
-                      sortBy: 'copy_score',
-                      sortOrder: 'desc',
-                      watchlistOnly: false,
-                    })
-                  }
-                  className="px-4 py-2 bg-[#19202f] hover:bg-[#222c40] text-white text-xs font-semibold rounded-xl transition-colors border border-[#1c2438] cursor-pointer"
-                >
-                  Reset All Filters
-                </button>
-              </div>
-            )}
+              {/* Empty State */}
+              {!loading && filteredTraders.length === 0 && (
+                <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center text-slate-500">
+                  <Compass className="w-12 h-12 mx-auto text-slate-400 mb-3" />
+                  <h3 className="text-base font-bold text-slate-900 mb-1">No Traders Match Your Filters</h3>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto mb-4">
+                    Try lowering your minimum score or clearing filters to see more traders.
+                  </p>
+                  <button
+                    onClick={() =>
+                      setFilters({
+                        platform: 'all',
+                        minCopyScore: 0,
+                        style: 'all',
+                        bias: 'all',
+                        riskTier: 'all',
+                        performanceFilter: 'all',
+                        recommendedOnly: false,
+                        searchQuery: '',
+                        sortBy: 'copy_score',
+                        sortOrder: 'desc',
+                        watchlistOnly: false,
+                      })
+                    }
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-xl transition-colors border border-slate-200 cursor-pointer"
+                  >
+                    Reset All Filters
+                  </button>
+                </div>
+              )}
 
-            {/* Grid or Table Results */}
-            {!loading && filteredTraders.length > 0 && (
-              <>
-                {viewMode === 'grid' ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {filteredTraders.map((trader) => (
-                      <TraderCard
-                        key={trader.address}
-                        trader={trader}
-                        isWatchlisted={watchlist.includes(trader.address.toLowerCase())}
-                        onToggleWatchlist={handleToggleWatchlist}
-                        onSelectTrader={(t) => setDetailModalTrader(t)}
-                        onSimulate={handleSimulateTrader}
-                        onOpenCopilot={handleOpenCopilot}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <TraderTable
-                    traders={filteredTraders}
-                    isWatchlisted={(addr) => watchlist.includes(addr.toLowerCase())}
-                    onToggleWatchlist={handleToggleWatchlist}
-                    onSelectTrader={(t) => setDetailModalTrader(t)}
-                    onSimulate={handleSimulateTrader}
-                  />
-                )}
-              </>
-            )}
-          </div>
-        )}
+              {/* Grid or Table Results */}
+              {!loading && filteredTraders.length > 0 && (
+                <>
+                  {viewMode === 'grid' ? (
+                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                      {filteredTraders.map((trader) => (
+                        <TraderCard
+                          key={trader.address}
+                          trader={trader}
+                          isWatchlisted={watchlist.includes(trader.address.toLowerCase())}
+                          onToggleWatchlist={handleToggleWatchlist}
+                          onSelectTrader={(t) => setDetailModalTrader(t)}
+                          onSimulate={handleSimulateTrader}
+                          onOpenCopilot={handleOpenCopilot}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <TraderTable
+                      traders={filteredTraders}
+                      isWatchlisted={(addr) => watchlist.includes(addr.toLowerCase())}
+                      onToggleWatchlist={handleToggleWatchlist}
+                      onSelectTrader={(t) => setDetailModalTrader(t)}
+                      onSimulate={handleSimulateTrader}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
-        {/* TAB 2: SIMULATOR */}
-        {activeTab === 'simulator' && (
-          <CopySimulator
-            traders={traders}
-            selectedTrader={selectedTrader}
-            onSelectTrader={setSelectedTrader}
-            watchlistAddresses={watchlist}
-          />
-        )}
+          {/* ROUTE: INTELLIGENCE WORKSPACE */}
+          {currentRoute === 'intelligence' && (
+            <StrikeCopilotWorkspace
+              activeTrader={selectedTrader || detailModalTrader}
+              allTraders={traders}
+              markets={markets}
+              userCapital={userCapital}
+              setUserCapital={setUserCapital}
+              onNavigateToSimulator={(trader) => {
+                if (trader) handleSimulateTrader(trader);
+                else setCurrentRoute('simulator');
+              }}
+              onNavigateToDiscovery={() => setCurrentRoute('discovery')}
+              onNavigateToDashboard={() => setCurrentRoute('home')}
+              onSelectTrader={(t) => setSelectedTrader(t)}
+            />
+          )}
 
-        {/* TAB 3: WATCHLIST */}
-        {activeTab === 'watchlist' && (
-          <WatchlistView
-            traders={traders}
-            watchlistAddresses={watchlist}
-            onToggleWatchlist={handleToggleWatchlist}
-            onSelectTrader={(t) => setDetailModalTrader(t)}
-            onSimulate={handleSimulateTrader}
-            onNavigateDiscovery={() => setActiveTab('discovery')}
-          />
-        )}
+          {/* ROUTE: SIMULATOR (PRACTICE TRADING) */}
+          {currentRoute === 'simulator' && (
+            <SimulatorView
+              traders={traders}
+              selectedTrader={selectedTrader}
+              onSelectTrader={setSelectedTrader}
+              watchlistAddresses={watchlist}
+              markets={markets}
+              onOpenCopilot={(prompt) => handleOpenCopilot(undefined, prompt)}
+            />
+          )}
 
-        {/* TAB 4: COPILOT DEDICATED WORKSPACE */}
-        {activeTab === 'copilot' && (
-          <StrikeCopilotWorkspace
-            activeTrader={selectedTrader || detailModalTrader}
-            allTraders={traders}
-            userCapital={userCapital}
-            setUserCapital={setUserCapital}
-            onNavigateToSimulator={(trader) => {
-              if (trader) handleSimulateTrader(trader);
-              else setActiveTab('simulator');
-            }}
-            onNavigateToDiscovery={() => setActiveTab('discovery')}
-            onSelectTrader={(t) => setSelectedTrader(t)}
-          />
-        )}
-      </main>
+          {/* ROUTE: MARKETS */}
+          {currentRoute === 'markets' && (
+            <MarketsView
+              markets={markets}
+              onSelectMarket={() => {}}
+              onOpenCopilot={(prompt) => handleOpenCopilot(undefined, prompt)}
+              onPracticeMarket={() => setCurrentRoute('simulator')}
+            />
+          )}
+
+          {/* ROUTE: WATCHLIST */}
+          {currentRoute === 'watchlist' && (
+            <WatchlistView
+              traders={traders}
+              watchlistAddresses={watchlist}
+              onToggleWatchlist={handleToggleWatchlist}
+              onSelectTrader={(t) => setDetailModalTrader(t)}
+              onSimulate={handleSimulateTrader}
+              onNavigateDiscovery={() => setCurrentRoute('discovery')}
+            />
+          )}
+
+          {/* ROUTE: SETTINGS */}
+          {currentRoute === 'settings' && (
+            <SettingsView
+              userCapital={userCapital}
+              setUserCapital={setUserCapital}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Docked bottom market ticker matching reference */}
+      <MarketTickerBar markets={markets} />
 
       {/* Trader Detail Modal */}
       {detailModalTrader && (
@@ -395,60 +538,44 @@ export default function App() {
         />
       )}
 
-      {/* Strike Copilot AI Assistant (Slide-over Drawer) */}
+      {/* Mensah Intelligence Slide-Over AI Assistant */}
       <StrikeCopilot
         isOpen={isCopilotOpen}
         onClose={() => setIsCopilotOpen(false)}
         onOpen={() => setIsCopilotOpen(true)}
         activeTrader={selectedTrader || detailModalTrader}
         allTraders={traders}
+        markets={markets}
         userCapital={userCapital}
-        currentView={activeTab}
+        currentView={
+          currentRoute === 'home'
+            ? 'dashboard'
+            : currentRoute === 'intelligence'
+            ? 'copilot'
+            : currentRoute === 'simulator'
+            ? 'simulator'
+            : currentRoute === 'watchlist'
+            ? 'watchlist'
+            : 'discovery'
+        }
         onSelectTrader={(t) => setSelectedTrader(t)}
-        onExpandToDedicatedPage={() => setActiveTab('copilot')}
+        onExpandToDedicatedPage={() => setCurrentRoute('intelligence')}
         onNavigateToSimulator={(trader) => {
           if (trader) setSelectedTrader(trader);
-          setActiveTab('simulator');
+          setCurrentRoute('simulator');
           setIsCopilotOpen(false);
         }}
         onNavigateToDiscovery={() => {
-          setActiveTab('discovery');
+          setCurrentRoute('discovery');
+          setIsCopilotOpen(false);
+        }}
+        onNavigateToDashboard={() => {
+          setCurrentRoute('home');
           setIsCopilotOpen(false);
         }}
         initialPrompt={copilotInitialPrompt}
         onClearInitialPrompt={() => setCopilotInitialPrompt(undefined)}
       />
-
-      {/* Clean Minimal Footer */}
-      <footer className="border-t border-[#1c2438] bg-[#0a0d14] py-8 px-4 sm:px-6 mt-16 text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2 text-slate-400">
-            <span className="font-bold text-white tracking-tight">Strike Copy Intelligence</span>
-            <span>·</span>
-            <span>Risk-Adjusted Discovery & Simulation</span>
-          </div>
-
-          <div className="flex items-center gap-4 text-xs text-slate-500">
-            <a
-              href="https://strikefinance.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[#00f29d] transition-colors"
-            >
-              Strike Finance
-            </a>
-            <span>·</span>
-            <a
-              href="https://app.hyperliquid.xyz"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[#38bdf8] transition-colors"
-            >
-              Hyperliquid
-            </a>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

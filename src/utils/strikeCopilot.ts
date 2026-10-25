@@ -13,7 +13,7 @@ export interface CopilotMessage {
   };
   suggestedChips?: string[];
   actionCard?: {
-    type: 'confirmation' | 'recommendation' | 'volatility_warning' | 'sizing_plan';
+    type: 'confirmation' | 'recommendation' | 'volatility_warning' | 'sizing_plan' | 'market_link' | 'trader_link' | 'simulation_link' | 'risk_warning';
     title: string;
     description: string;
     actionLabel?: string;
@@ -26,7 +26,7 @@ export interface CopilotContext {
   activeTrader?: Trader | null;
   allTraders?: Trader[];
   userCapital?: number;
-  currentView?: 'discovery' | 'simulator' | 'watchlist' | 'copilot';
+  currentView?: 'dashboard' | 'discovery' | 'simulator' | 'watchlist' | 'copilot';
   simulationResult?: SimulationResult | null;
   recommendationAnalysis?: RecommendationAnalysis | null;
 }

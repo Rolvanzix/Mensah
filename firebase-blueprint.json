@@ -1,0 +1,138 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile with $10,000 virtual practice balance",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user's unique Firebase auth ID"
+        },
+        "email": {
+          "type": "string",
+          "description": "The user's email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The user's display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User avatar image URL"
+        },
+        "virtualBalance": {
+          "type": "number",
+          "description": "Simulated practice trading cash balance in virtual USD"
+        },
+        "hasReceivedInitialBonus": {
+          "type": "boolean",
+          "description": "Whether user received the one-time $10,000 practice grant"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of account creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["uid", "virtualBalance"]
+    },
+    "PracticeTrade": {
+      "title": "PracticeTrade",
+      "description": "Practice paper trade position (open or closed)",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique position ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner user UID"
+        },
+        "marketSymbol": {
+          "type": "string",
+          "description": "Contract symbol (e.g., BTC-USD)"
+        },
+        "side": {
+          "type": "string",
+          "enum": ["long", "short"],
+          "description": "Trade direction: long or short"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Margin committed in virtual USD"
+        },
+        "leverage": {
+          "type": "number",
+          "description": "Leverage multiplier (1 to 50)"
+        },
+        "entryPrice": {
+          "type": "number",
+          "description": "Asset price at execution"
+        },
+        "positionSize": {
+          "type": "number",
+          "description": "Position size in contract units"
+        },
+        "stopLoss": {
+          "type": "number",
+          "description": "Optional stop loss price trigger"
+        },
+        "takeProfit": {
+          "type": "number",
+          "description": "Optional take profit price trigger"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed"],
+          "description": "Current status: open or closed"
+        },
+        "closePrice": {
+          "type": "number",
+          "description": "Exit price when closed"
+        },
+        "realizedPnL": {
+          "type": "number",
+          "description": "Final profit or loss in virtual USD"
+        },
+        "closeReason": {
+          "type": "string",
+          "description": "Reason for closing (manual, take_profit, stop_loss, liquidation)"
+        },
+        "openedAt": {
+          "type": "string",
+          "description": "ISO timestamp of entry"
+        },
+        "closedAt": {
+          "type": "string",
+          "description": "ISO timestamp of exit"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "marketSymbol",
+        "side",
+        "amount",
+        "leverage",
+        "entryPrice",
+        "status",
+        "openedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile with virtual paper balance"
+    },
+    "/users/{userId}/positions/{positionId}": {
+      "schema": "PracticeTrade",
+      "description": "Practice trading positions belonging to the user"
+    }
+  }
+}

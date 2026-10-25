@@ -1,8 +1,8 @@
 import React from 'react';
 import { StrikeLogo } from './StrikeLogo';
-import { Bookmark, Bot, Compass, Search, Sliders } from 'lucide-react';
+import { Bookmark, Bot, Compass, LayoutDashboard, Search, Sliders } from 'lucide-react';
 
-export type NavigationTab = 'discovery' | 'simulator' | 'watchlist' | 'copilot';
+export type NavigationTab = 'dashboard' | 'discovery' | 'simulator' | 'watchlist' | 'copilot';
 
 interface HeaderProps {
   activeTab: NavigationTab;
@@ -24,18 +24,23 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-40 bg-[#0a0d14]/90 backdrop-blur-md border-b border-[#1c2438] px-4 sm:px-6">
       <div className="max-w-7xl mx-auto h-16 flex items-center justify-between gap-6">
-        {/* Brand Lockup */}
+        {/* Brand Lockup: Mensah */}
         <button
-          onClick={() => setActiveTab('discovery')}
+          onClick={() => setActiveTab('dashboard')}
           className="flex items-center gap-3 text-left focus:outline-none shrink-0 group cursor-pointer"
         >
           <StrikeLogo size={32} />
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-bold text-base text-white tracking-tight group-hover:text-[#00f29d] transition-colors">
-              Strike
-            </span>
-            <span className="font-medium text-base text-slate-400 tracking-tight">
-              Copy Intelligence
+          <div className="flex flex-col">
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-extrabold text-base text-white tracking-tight group-hover:text-[#00f29d] transition-colors">
+                Mensah
+              </span>
+              <span className="font-medium text-[11px] text-[#00f29d] px-1.5 py-0.2 rounded bg-[#00f29d]/10 border border-[#00f29d]/30 font-mono">
+                Strike
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-medium tracking-tight -mt-0.5 hidden sm:block">
+              Perpetual Analytics & Copy Engine
             </span>
           </div>
         </button>
@@ -48,17 +53,29 @@ export const Header: React.FC<HeaderProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by trader, address, or symbol..."
+              placeholder="Search trader, address, or perp symbol..."
               className="bg-transparent border-none outline-none font-sans text-xs text-slate-200 placeholder:text-slate-500 w-full"
             />
           </div>
         </div>
 
         {/* Clean Nav Tabs */}
-        <nav className="flex items-center gap-1.5 sm:gap-2">
+        <nav className="flex items-center gap-1 sm:gap-2">
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'dashboard'
+                ? 'bg-[#19202f] text-[#00f29d] border border-[#273248] shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4" />
+            <span className="hidden sm:inline">Dashboard</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('discovery')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'discovery'
                 ? 'bg-[#19202f] text-[#00f29d] border border-[#273248] shadow-sm'
                 : 'text-slate-400 hover:text-white'
@@ -70,7 +87,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             onClick={() => setActiveTab('simulator')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'simulator'
                 ? 'bg-[#19202f] text-[#00f29d] border border-[#273248] shadow-sm'
                 : 'text-slate-400 hover:text-white'
@@ -82,16 +99,16 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             onClick={() => setActiveTab('watchlist')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'watchlist'
                 ? 'bg-[#19202f] text-[#00f29d] border border-[#273248] shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
             <Bookmark className="w-4 h-4" />
-            <span>Watchlist</span>
+            <span className="hidden sm:inline">Watchlist</span>
             {watchlistCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.2 rounded-md text-[10px] font-bold bg-[#00f29d]/20 text-[#00f29d] tabular-nums">
+              <span className="ml-0.5 px-1.5 py-0.2 rounded-md text-[10px] font-bold bg-[#00f29d]/20 text-[#00f29d] tabular-nums">
                 {watchlistCount}
               </span>
             )}
@@ -101,15 +118,15 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={() => {
               setActiveTab('copilot');
             }}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'copilot'
                 ? 'bg-[#19202f] text-[#00f29d] border border-[#273248] shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
-            title="Open Strike Copilot console"
+            title="Open Mensah Intelligence console"
           >
             <Bot className="w-4 h-4 text-[#00f29d]" />
-            <span className="hidden sm:inline">Copilot</span>
+            <span className="hidden sm:inline">Intelligence</span>
             <span className="w-1.5 h-1.5 rounded-full bg-[#00f29d] animate-pulse" />
           </button>
         </nav>
